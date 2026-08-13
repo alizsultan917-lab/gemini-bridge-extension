@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Vocab Register — Gemini Bridge",
+  "version": "1.0.0",
+  "description": "Bridges your Vocabulary Register app with gemini.google.com: send a word to Gemini and pull definitions/images back into your register.",
+
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["https://gemini.google.com/*"],
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Edit Gemini prompt"
+  },
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content-gemini.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://alizsultan917-lab.github.io/VocabBuilderPLUS/*"],
+      "js": ["bridge-app.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
