@@ -1,10 +1,11 @@
 # Vocab Register — Gemini Bridge (Chrome Extension)
 
 ## What each file does
-- `manifest.json` — MV3 config. Declares two content scripts (Gemini side,
-  app side) and the background service worker.
-- `background.js` — relays messages between the two content scripts;
-  also owns tab-finding/creating logic for "Search Gemini".
+- `manifest.json` — MV3 config. Declares three content scripts (Gemini
+  side, YouTube side, app side) and the background service worker.
+- `background.js` — relays messages between the content scripts; also
+  owns tab-finding/creating logic for "Search Gemini" and the YouTube
+  search round trip.
 - `content-gemini.js` — runs on gemini.google.com. Types the strict
   literary lookup prompt into the chat box on request, then watches
   each response with a `MutationObserver` and — as soon as it detects
@@ -12,6 +13,11 @@
   it: a definition, an attached image, and a US + UK phonetic
   respelling. **Fully automated: no "Save to Register" button, no
   click.**
+- `content-youtube.js` — runs on youtube.com. Watches for SPA
+  navigation to a video page (`yt-navigate-finish`, plus a defensive
+  poll) and reports it to `background.js`. It reports from *every*
+  youtube.com tab indiscriminately — it's `background.js` that decides
+  whether the report actually came from the tab this extension opened.
 - `bridge-app.js` — runs on your app's page. Pure relay: turns
   `chrome.runtime` messages into `window.postMessage` and back, so your
   app's own `script.js` never has to touch the `chrome.*` API.
@@ -109,11 +115,13 @@ extension, that old prompt is migrated automatically into slot 1 the
 first time you open the popup after updating.
 
 ## Setup
-1. **Edit `manifest.json`.** The second `content_scripts` entry (`bridge-app.js`)
-   must match your app's real deployed URL (already set to
-   `https://alizsultan917-lab.github.io/VocabBuilderPLUS/*` — update this
-   if you redeploy elsewhere, or add `file:///*` / `http://localhost/*`
-   back in for local testing).
+1. **Edit `manifest.json`.** The *last* `content_scripts` entry
+   (`bridge-app.js`) must match your app's real deployed URL (already
+   set to `https://alizsultan917-lab.github.io/VocabBuilderPLUS/*` —
+   update this if you redeploy elsewhere, or add `file:///*` /
+   `http://localhost/*` back in for local testing). The other two
+   entries (`content-gemini.js` on gemini.google.com,
+   `content-youtube.js` on youtube.com) don't need any editing.
    - If you're testing over `file://`, you must also turn on **"Allow
      access to file URLs"** for this extension in `chrome://extensions`
      after loading it (see step 3) — Chrome disables file:// access for
@@ -126,6 +134,8 @@ first time you open the popup after updating.
 4. Open your app, then open gemini.google.com in another tab (or just
    click "Search Gemini" — it'll open one for you). Definitions/images
    should now auto-populate with zero further clicks.
+5. For the YouTube round trip, nothing extra to set up — open the
+   YouTube Window, type a search, and click 🌐.
 
 ## Known fragility
 Google's Gemini DOM uses obfuscated, frequently-changing class names.
@@ -171,6 +181,107 @@ Tab** (`F8`) — are synced to this extension automatically (see
 - Pressing your "Return to App Tab" key **while sitting on the Gemini
   tab itself** switches you straight back to the app (`content-gemini.js`
   listens for it and relays `RETURN_TO_APP_TAB` to `background.js`).
+- The same key does the same thing **while sitting on a youtube.com
+  tab** — `content-youtube.js` now carries the identical listener (same
+  synced key, same `RETURN_TO_APP_TAB` relay), so returning from a
+  video-search tab works exactly like returning from Gemini. This works
+  on any youtube.com tab, not just one opened via 🌐 below, since
+  there's no reliable way for a content script to tell those apart from
+  inside the page (see "Only your search tab is watched" further down)
+  — harmless either way, since it only ever focuses the app tab.
+
+### 🔄 Restart Gemini Tab
+A third Gemini-related button sits next to "Search Gemini" in the app
+(default key **`` ` `` / Backquote**, also remappable in the same ⌨️
+sidebar, under "Main Actions"). Unlike Focus Gemini Tab, this one
+doesn't just switch to an existing tab — it closes **every** currently
+open `gemini.google.com` tab and opens a brand new one, focusing it. If
+no Gemini tab is currently open, it just opens one. Handled by
+`RESTART_GEMINI_TAB` in `background.js` / `bridge-app.js`, same relay
+pattern as everything else here. Like Search Gemini, it can be
+individually hidden from the Add Word form via ⚙️ Fetch limits → Add
+Word Form Buttons.
+
+If the word bar has something typed into it when you click Restart (or
+press its shortcut), that word — and the book title, if the field is
+shown — is sent along too, and gets typed into the freshly-opened tab
+once it's ready, the same way "Search Gemini" would do it (same
+`INJECT_SEARCH` path, via `sendInjectWithRetry()` in `background.js`).
+So restarting a stuck/broken Gemini tab doesn't cost you the lookup you
+were about to make. If the word bar is empty, it stays a plain
+close-and-reopen with nothing typed, same as before.
+
+## 🌐 Search on YouTube.com (from the YouTube Window)
+The floating YouTube Window (`youtube-window.js`/`.css`) has a round 🌐
+button next to its own 🔎 search button. Type into the YouTube
+Window's search bar as normal, then click 🌐 instead of (or after) 🔎:
+
+1. `youtube-window.js` sends whatever's currently in the search bar as
+   a `YOUTUBE_SEARCH_EXTERNAL` `window.postMessage`.
+2. `bridge-app.js` relays it to `background.js`, which opens (or, if
+   one from an earlier search is still open, reuses) a real
+   `youtube.com` tab at `https://www.youtube.com/results?search_query=…`
+   and focuses it. This is genuine YouTube.com — real thumbnails,
+   channel branding, live badges, everything the in-window API-key
+   results list can't show — no typing/injection needed, since
+   YouTube's own results page takes the query straight in the URL.
+3. Browse normally on that tab. The moment you click through to any
+   video — a search result, a suggested/related video, anything —
+   `content-youtube.js` notices the navigation (via YouTube's own
+   `yt-navigate-finish` SPA event, with a polling fallback) and reports
+   the video's URL to `background.js`.
+4. `background.js` checks that the report came from the specific tab
+   it opened in step 2 (any *other* youtube.com tab you happen to have
+   open for your own unrelated browsing is completely ignored — see
+   "Only your search tab is watched" below), then: relays the URL to
+   your app tab, **closes the YouTube tab** (unless stay-on-tab mode is
+   on — see below), and focuses you back on the app.
+5. Back in the app, `script.js`'s `YOUTUBE_VIDEO_SELECTED` listener
+   hands the URL to `window.YouTubeWindow.loadVideo()`, which plays it
+   right there in the YouTube Window with full in-window controls.
+
+If you never pick a video and just close the search tab yourself,
+nothing gets sent to the app — `background.js` simply notices the tab
+closed (`chrome.tabs.onRemoved`) and forgets about it.
+
+### 🔁 "Keep YouTube tab open (copy link only)" — stay-on-tab mode
+A toggle in the YouTube Window's ⚙ settings panel (next to the API key
+field) changes steps 3–4 above:
+
+- **Off (default):** the flow described above — clicking a video plays
+  it on the youtube.com tab itself, then that tab closes and you're
+  brought back to the app with the video loaded there. To pick another
+  video, you search again and a new (or reused) tab opens.
+- **On:** clicking (or arrow-key-selecting, via the keyboard browser
+  below) a video **never actually opens it** on the youtube.com tab —
+  `content-youtube.js` intercepts the click before it navigates, reads
+  the `/watch` URL straight off the link, and reports it exactly like a
+  normal pick. The results page is left exactly as it was, and the tab
+  is **not closed**. You're still relayed back to the app with the
+  video loaded there, but the youtube.com tab stays open and ready — so
+  you can pick a second, third, etc. video from it without it reopening
+  or navigating away each time.
+
+The toggle is a plain app preference (`youtube-window.js`, stored in
+`localStorage`) that's relayed to the extension the same way the app's
+accent color and keyboard-shortcut bindings are: a `window.postMessage`
+→ `bridge-app.js` → `background.js` → `chrome.storage.local` chain
+(`SYNC_YT_STAY_MODE`, stored under `vocabBridge_stayOnYoutubeTab`).
+Both `background.js` (closes the tab or not) and `content-youtube.js`
+(intercepts the click or not) read that same stored value independently,
+so it takes effect immediately and survives the background service
+worker being restarted.
+
+### Only your search tab is watched
+`content-youtube.js` runs on *every* youtube.com page and reports
+every video navigation it sees, indiscriminately — it has no way to
+tell, from inside the page, whether a given tab is "the one the
+extension opened" versus a tab you opened yourself to watch something
+unrelated. That distinction is enforced entirely on the `background.js`
+side: it remembers the exact tab id it created for the search, and
+silently ignores any `YOUTUBE_VIDEO_SELECTED` report that doesn't come
+from that specific tab. Your own everyday YouTube browsing, in any
+other tab, never triggers a relay, a tab close, or a focus switch.
 
 ## Data flow
 ```

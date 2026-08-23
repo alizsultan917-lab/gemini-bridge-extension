@@ -19,6 +19,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     window.postMessage({ type: "GEMINI_ENTRY_SCRAPED", payload: message.payload }, window.location.origin);
     sendResponse({ ok: true });
   }
+
+  if (message?.type === "YOUTUBE_VIDEO_SELECTED") {
+    console.log("[VocabBridge:bridge-app] Received YOUTUBE_VIDEO_SELECTED from background.js, relaying to page:", message.payload);
+    window.postMessage({ type: "YOUTUBE_VIDEO_SELECTED", payload: message.payload }, window.location.origin);
+    sendResponse({ ok: true });
+  }
 });
 
 // --- page -> extension -----------------------------------------------
@@ -64,6 +70,26 @@ window.addEventListener("message", (event) => {
     safeSendMessage({ type: "SEARCH_GEMINI", word: event.data.word, bookTitle: event.data.bookTitle || "" });
   }
 
+  // "Restart Gemini Tab" — close whatever Gemini tab(s) are open and
+  // open a fresh one. If script.js had a word (and optional book title)
+  // pending, they're passed through so background.js can type the
+  // prompt into the new tab once it's ready — same as a normal Search
+  // Gemini, just after a clean restart.
+  if (event.data.type === "RESTART_GEMINI_TAB") {
+    safeSendMessage({
+      type: "RESTART_GEMINI_TAB",
+      word: event.data.word || "",
+      bookTitle: event.data.bookTitle || "",
+    });
+  }
+
+  // "Search on YouTube.com" (YouTube Window's 🌐 button) — opens/reuses
+  // a real youtube.com tab and shows results for this query. Picking a
+  // video there comes back as a YOUTUBE_VIDEO_SELECTED message above.
+  if (event.data.type === "YOUTUBE_SEARCH_EXTERNAL" && typeof event.data.query === "string") {
+    safeSendMessage({ type: "YOUTUBE_SEARCH_EXTERNAL", query: event.data.query });
+  }
+
   // Keyboard-shortcut tab switching (see the "CUSTOMIZABLE KEYBOARD
   // SHORTCUT SYSTEM" block in script.js): "Focus Gemini Tab" just needs
   // background.js to switch to an already-open Gemini tab, and the
@@ -74,11 +100,35 @@ window.addEventListener("message", (event) => {
     safeSendMessage({ type: "FOCUS_GEMINI_TAB" });
   }
 
+  if (event.data.type === "FOCUS_YOUTUBE_TAB") {
+    safeSendMessage({ type: "FOCUS_YOUTUBE_TAB" });
+  }
+
   if (event.data.type === "SYNC_SHORTCUT_KEYS") {
     safeSendMessage({
       type: "SYNC_SHORTCUT_KEYS",
       focusGeminiKey: event.data.focusGeminiKey,
       focusAppKey: event.data.focusAppKey,
+      youtubeSearchKey: event.data.youtubeSearchKey,
     });
+  }
+
+  // The app's current effective accent color (Custom Accent Color, smart-
+  // extracted, or default — see syncAccentColorToExtension() in
+  // script.js), relayed so content-youtube.js can highlight its arrow-key
+  // focused video/channel card the same color as the rest of the app.
+  if (event.data.type === "SYNC_ACCENT_COLOR" && typeof event.data.accentColor === "string") {
+    safeSendMessage({ type: "SYNC_ACCENT_COLOR", accentColor: event.data.accentColor });
+  }
+
+  // The YouTube Window's "Keep YouTube tab open (copy link only)" toggle
+  // (see syncStayOnTabToExtension() in youtube-window.js). Relayed the
+  // same way as SYNC_ACCENT_COLOR/SYNC_SHORTCUT_KEYS — background.js
+  // stores it in chrome.storage.local so both itself (whether to close
+  // the search tab after a pick) and content-youtube.js (whether to let
+  // a video click actually navigate at all) can read it independent of
+  // this content script or the service worker's lifecycle.
+  if (event.data.type === "SYNC_YT_STAY_MODE" && typeof event.data.stayOnTab === "boolean") {
+    safeSendMessage({ type: "SYNC_YT_STAY_MODE", stayOnTab: event.data.stayOnTab });
   }
 });
