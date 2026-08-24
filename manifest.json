@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vocab Register — Gemini Bridge",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Bridges your Vocabulary Register app with gemini.google.com and youtube.com: send a word to Gemini and pull definitions/images back into your register, or search YouTube and pull a picked video's URL back into the YouTube Window. Includes an optional 'Keep YouTube tab open' mode for picking several videos in a row.",
 
   "permissions": ["storage", "tabs"],
@@ -25,7 +25,8 @@
     {
       "matches": ["https://www.youtube.com/*"],
       "js": ["content-youtube.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     },
     {
       "matches": ["https://alizsultan917-lab.github.io/VocabBuilderPLUS/*"],

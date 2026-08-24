@@ -1,15 +1,22 @@
 /* content-youtube.js
-   Runs on every youtube.com page. Its only job is noticing when the tab
-   navigates to a video ("you picked one") and telling background.js —
-   background.js is what decides whether to actually care (see the
-   YOUTUBE_VIDEO_SELECTED handler / tab-id check in background.js). This
-   script deliberately does NOT try to tell "is this the app's search
-   tab?" apart from any other youtube.com tab you might have open for
-   your own ordinary browsing — it can't, from inside the page, and
-   guessing wrong would be worse than not guessing at all. It just
-   reports every video navigation, on every youtube.com tab, always;
-   background.js's tab-id check is what keeps your own browsing
-   untouched. */
+   Runs on every youtube.com page — and, as of manifest.json's
+   "all_frames": true, inside every youtube.com IFRAME too, including
+   the embedded player the app's own floating YouTube Window uses. Its
+   main job is noticing when the tab navigates to a video ("you picked
+   one") and telling background.js — background.js is what decides
+   whether to actually care (see the YOUTUBE_VIDEO_SELECTED handler /
+   tab-id check in background.js). This script deliberately does NOT
+   try to tell "is this the app's search tab?" apart from any other
+   youtube.com tab you might have open for your own ordinary browsing —
+   it can't, from inside the page, and guessing wrong would be worse
+   than not guessing at all. It just reports every video navigation, on
+   every youtube.com tab, always; background.js's tab-id check is what
+   keeps your own browsing untouched. It also handles a few synced
+   keyboard shortcuts (Return to App, Focus YouTube Search, Skip Ad —
+   see each block below) and, for Skip Ad specifically, a postMessage
+   trigger so the app's embedded player can ask this same script (now
+   running inside that iframe too) to click a Skip Ad button it
+   otherwise has no way to reach. */
 
 (function () {
   "use strict";
@@ -153,6 +160,214 @@
     chrome.runtime.sendMessage({ type: "RETURN_TO_APP_TAB" }).catch(() => {
       console.warn("[VocabBridge:content-youtube] Couldn't reach the extension to return to the app tab.");
     });
+  });
+
+  /* -----------------------------------------------------------------
+     SKIP AD — the app's "Skip YouTube Ad" shortcut (skipYoutubeAd in
+     script.js's CUSTOMIZABLE KEYBOARD SHORTCUT SYSTEM). Unlike every
+     other synced key above, this one has no default binding — it's
+     null/unset until the person assigns one in the app's Keyboard
+     Shortcuts sidebar — so skipAdKey starts as null here too, and the
+     listener below is a silent no-op until then (e.code is always a
+     real string, so it can never accidentally match a null key).
+
+     Two ways this fires, covering both places a video can be playing:
+
+     1. A real youtube.com tab (opened via the 🌐 search, or just your
+        own ordinary browsing) — this content script runs there and the
+        keydown listener below fires directly, same shape as the
+        Return-to-App/Focus-Search listeners above.
+
+     2. The app's own floating YouTube Window, which plays video inside
+        a youtube.com iframe embed. A key press there happens on the
+        APP's page, not inside that iframe, so script.js can't click
+        the iframe's Skip Ad button directly (cross-origin) — instead
+        youtube-window.js's skipAd() posts a message straight to that
+        iframe's contentWindow, and — because manifest.json now injects
+        this content script into every youtube.com frame, not just
+        top-level tabs ("all_frames": true) — this same script is
+        running *inside* that embed too, and the message listener
+        further below picks it up and clicks locally, no different
+        from case 1.
+  ----------------------------------------------------------------- */
+  const SKIP_AD_KEY_STORAGE = "vocabBridge_skipAdKey";
+  let skipAdKey = null; // no default — stays off until the person binds one
+
+  chrome.storage.local.get(SKIP_AD_KEY_STORAGE).then((stored) => {
+    if (typeof stored[SKIP_AD_KEY_STORAGE] === "string") skipAdKey = stored[SKIP_AD_KEY_STORAGE];
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes[SKIP_AD_KEY_STORAGE]) {
+      skipAdKey = changes[SKIP_AD_KEY_STORAGE].newValue || null;
+    }
+  });
+
+  // YouTube's ad-skip button markup/class names have shifted more than
+  // once over the years — same "try each in order, first match wins"
+  // defensiveness as YT_SEARCH_BOX_SELECTORS above, so a future rename
+  // doesn't silently break this the way one fixed selector would.
+  const YT_SKIP_AD_SELECTORS = [
+    ".ytp-ad-skip-button-modern",
+    ".ytp-ad-skip-button",
+    ".ytp-skip-ad-button",
+    ".ytp-ad-skip-button-container button",
+    'button[class*="ytp-ad-skip-button"]',
+    'button[id*="skip-button"]',
+  ];
+
+  function findSkipAdButton() {
+    for (const sel of YT_SKIP_AD_SELECTORS) {
+      const el = document.querySelector(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  // Returns true if an ad was actually detected and force-skipped —
+  // false (a harmless no-op) if no ad happens to be showing right now,
+  // e.g. the key was pressed outside the window an ad is on screen.
+  //
+  // Both a plain btn.click() AND a full synthetic pointerdown/mousedown/
+  // pointerup/mouseup/click sequence at the button's real coordinates
+  // reliably found and "clicked" the button (confirmed live, see the
+  // TEMP DEBUG logs below) but never actually skipped the ad. The
+  // remaining explanation is that YouTube's real skip handler checks
+  // event.isTrusted — a flag only the browser itself can set on a
+  // genuine physical input event, which no script (this one included)
+  // can ever fake. So instead of clicking the button at all, this
+  // forces the underlying <video> element's own currentTime to its
+  // duration once an ad is confirmed showing. That's a native media-
+  // element property assignment, not a synthetic input event, so it
+  // isn't gated by isTrusted — the browser's media engine treats it
+  // exactly like the ad clip actually finishing, which YouTube's ad
+  // module advances past the same way it would on its own. Works for
+  // non-skippable ad segments too, not just ones with a visible button.
+  //
+  // isAdShowing() gates all of this — without it, pressing the key
+  // outside an ad would force the real video's OWN currentTime to its
+  // end, jumping you straight to the end of whatever you're actually
+  // watching. Never skip that check.
+  function isAdShowing() {
+    const playerEl = document.querySelector(".html5-video-player");
+    if (playerEl && playerEl.classList.contains("ad-showing")) return true;
+    const adModule = document.querySelector(".ytp-ad-module");
+    if (adModule && adModule.children.length > 0) return true;
+    if (document.querySelector(".ytp-ad-player-overlay")) return true;
+    return false;
+  }
+
+  function findAdVideoElement() {
+    return document.querySelector("video.html5-main-video") || document.querySelector("video");
+  }
+
+  // TEMP DEBUG: logs which case it hit, so a person testing this can see
+  // in the console whether the key reached this frame at all, whether an
+  // ad was actually detected, and whether the video's currentTime could
+  // be forced. Safe to remove once Skip Ad is confirmed working — see
+  // the console.log calls below.
+  function trySkipAd() {
+    if (!isAdShowing()) {
+      console.log("[VocabBridge:content-youtube] trySkipAd: no ad currently showing in this frame — leaving the real video alone. Frame URL:", location.href);
+      return false;
+    }
+
+    const btn = findSkipAdButton();
+    if (btn) {
+      console.log("[VocabBridge:content-youtube] trySkipAd: ad detected, also clicking the skip button as a best-effort (won't reliably work on its own):", btn);
+      dispatchRealClick(btn);
+    } else {
+      console.log("[VocabBridge:content-youtube] trySkipAd: ad detected, no skip button on screen (likely a non-skippable segment) — forcing the ad video to its end instead.");
+    }
+
+    const video = findAdVideoElement();
+    if (video && isFinite(video.duration) && video.duration > 0) {
+      console.log("[VocabBridge:content-youtube] trySkipAd: forcing ad video currentTime to its duration:", video.duration);
+      video.currentTime = video.duration;
+      return true;
+    }
+
+    console.log("[VocabBridge:content-youtube] trySkipAd: couldn't find a seekable video element to force past the ad.");
+    return !!btn;
+  }
+
+
+  function dispatchRealClick(el) {
+    const rect = el.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const base = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      button: 0,
+      buttons: 1,
+    };
+    // PointerEvent first (what modern Chrome/YouTube's own UI actually
+    // listens for), MouseEvent pairs right behind each for anything still
+    // listening the old-fashioned way, then a final "click" — same order
+    // a real physical click produces. Kept as a best-effort alongside the
+    // currentTime force above, in case a future YouTube change makes the
+    // button responsive to synthetic events again.
+    el.dispatchEvent(new PointerEvent("pointerdown", { ...base, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+    el.dispatchEvent(new MouseEvent("mousedown", base));
+    el.dispatchEvent(new PointerEvent("pointerup", { ...base, pointerId: 1, pointerType: "mouse", isPrimary: true, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent("mouseup", { ...base, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent("click", { ...base, buttons: 0 }));
+  }
+
+  // Capture phase, not bubble — same reasoning as the arrow-key grid-nav
+  // listener further down in this file: once the embedded player itself
+  // has keyboard focus (e.g. you clicked into it to play/pause or seek),
+  // YouTube's own player-level keyboard handling gets first crack at the
+  // event and calls stopPropagation() once it decides to act on a key —
+  // which meant a plain bubble-phase listener on `document` here never
+  // saw the keypress at all while the player had focus. This is what
+  // made Skip Ad specifically fail inside the app's floating YouTube
+  // Window (the other synced shortcuts don't depend on a keydown firing
+  // *inside* this iframe's own document the way Skip Ad's in-frame
+  // fallback does) — capture fires root-to-target, ahead of whatever the
+  // player attaches to itself, so this always gets a look at the key
+  // first regardless of what currently has focus inside the frame.
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.repeat) return;
+      if (e.altKey || e.ctrlKey || e.shiftKey || e.metaKey) return;
+      if (!skipAdKey) return;
+      if (e.code !== skipAdKey) return;
+      console.log("[VocabBridge:content-youtube] Skip Ad key matched (", e.code, ") in frame:", location.href);
+      if (trySkipAd()) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+    { capture: true }
+  );
+
+  // TEMP DEBUG: logs the moment skipAdKey is first loaded from storage
+  // and every time it changes, so it's obvious from the console whether
+  // this frame ever actually received a non-null value at all.
+  console.log("[VocabBridge:content-youtube] Skip Ad key listener armed in frame:", location.href, "— current value:", skipAdKey);
+  chrome.storage.local.get(SKIP_AD_KEY_STORAGE).then((stored) => {
+    console.log("[VocabBridge:content-youtube] Skip Ad key loaded from storage:", stored[SKIP_AD_KEY_STORAGE], "in frame:", location.href);
+  });
+
+  // The app's own origin (see manifest.json's bridge-app.js "matches" —
+  // keep the two in sync if you ever move the app to a new URL). Only
+  // messages posted from here are trusted to trigger a click — cheap
+  // insurance against some unrelated page embedding a youtube.com
+  // iframe of its own and prodding it. Low-stakes either way (worst
+  // case is one extra click attempt on a visible button), but free to
+  // check.
+  const APP_ORIGIN = "https://alizsultan917-lab.github.io";
+
+  window.addEventListener("message", (event) => {
+    if (event.origin !== APP_ORIGIN) return;
+    if (event.data?.type !== "VOCAB_SKIP_YOUTUBE_AD") return;
+    trySkipAd();
   });
 
   /* -----------------------------------------------------------------

@@ -110,6 +110,7 @@ window.addEventListener("message", (event) => {
       focusGeminiKey: event.data.focusGeminiKey,
       focusAppKey: event.data.focusAppKey,
       youtubeSearchKey: event.data.youtubeSearchKey,
+      skipAdKey: event.data.skipAdKey,
     });
   }
 

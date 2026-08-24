@@ -13,11 +13,17 @@
   it: a definition, an attached image, and a US + UK phonetic
   respelling. **Fully automated: no "Save to Register" button, no
   click.**
-- `content-youtube.js` — runs on youtube.com. Watches for SPA
-  navigation to a video page (`yt-navigate-finish`, plus a defensive
-  poll) and reports it to `background.js`. It reports from *every*
-  youtube.com tab indiscriminately — it's `background.js` that decides
-  whether the report actually came from the tab this extension opened.
+- `content-youtube.js` — runs on youtube.com, including inside the
+  youtube.com iframe the app's own floating YouTube Window embeds (see
+  `"all_frames": true` in `manifest.json`). Watches for SPA navigation
+  to a video page (`yt-navigate-finish`, plus a defensive poll) and
+  reports it to `background.js`. It reports from *every* youtube.com
+  tab indiscriminately — it's `background.js` that decides whether the
+  report actually came from the tab this extension opened. Also handles
+  a few synced keyboard shortcuts (Return to App, Focus YouTube Search,
+  Skip Ad) and, for Skip Ad, a `postMessage` trigger the app's embedded
+  player uses to reach it (see "🎬 YouTube Window keyboard shortcuts"
+  below).
 - `bridge-app.js` — runs on your app's page. Pure relay: turns
   `chrome.runtime` messages into `window.postMessage` and back, so your
   app's own `script.js` never has to touch the `chrome.*` API.
@@ -163,15 +169,21 @@ even though definitions still work.
 
 ## ⌨️ Customizable Keyboard Shortcuts (app-side)
 
-The app now has a Gemini-style sliding sidebar — click the new **⌨️** icon
-in the header (or press **F1**) — for fully remapping every shortcut:
-header buttons, Search Gemini / Fetch with AI / Add Entry / manual-add
-buttons, US/UK pronunciation, Definitions/Images list navigation +
-selection, and the two tab-switch keys below. Bindings save to
-`localStorage` instantly and survive reloads. Click any key field, then
-press the new key; hold the configurable **Pass-Through Modifier**
-(default `Alt`) while pressing a mapped key to type it as a literal
-character instead of triggering the shortcut.
+The app has a Gemini-style sliding sidebar — click the **⌨️** icon in the
+header — for fully remapping every shortcut: Search Gemini / Add Entry /
+manual-add buttons, US/UK pronunciation, Definitions/Images list
+navigation + selection, the tab-switch keys below, and the YouTube
+Window controls further down. Bindings save to `localStorage` instantly
+and survive reloads. Click any key field, then press the new key; hold
+the configurable **Pass-Through Modifier** while pressing a mapped key
+to type it as a literal character instead of triggering the shortcut.
+
+(A handful of header-bar buttons — Display settings, Customize layout,
+Storage settings, the ⌨️ sidebar toggle itself, Fetch with AI, and Add
+Manual Image — are click-only now; they were removed from this
+remapping system since keeping the sidebar focused on the bindings
+people actually rebind made the list easier to scan. All six still work
+exactly as before with the mouse.)
 
 Two of those bindings — **Focus Gemini Tab** (`F7`) and **Return to App
 Tab** (`F8`) — are synced to this extension automatically (see
@@ -282,6 +294,42 @@ side: it remembers the exact tab id it created for the search, and
 silently ignores any `YOUTUBE_VIDEO_SELECTED` report that doesn't come
 from that specific tab. Your own everyday YouTube browsing, in any
 other tab, never triggers a relay, a tab close, or a focus switch.
+
+## 🎬 YouTube Window keyboard shortcuts
+The ⌨️ sidebar's "YouTube Window" group has six bindings for the
+floating YouTube Window: **Previous Track** (`F4`), **Play/Pause**
+(`F5`), and **Next Track** (`F6`) mirror the window's own transport bar
+and ship bound by default; **Close YouTube Window**, **Hide YouTube
+Window**, and **Skip YouTube Ad** ship unbound — set one from the
+sidebar if you want it. (Toggle Page Bar Layout, which used to default
+to `F5`, now defaults to `F9` to make room for Play/Pause.)
+
+Previous/Play-Pause/Next and Close/Hide call straight into
+`youtube-window.js` (`window.YouTubeWindow.transport.*`, `.close()`,
+`.hide()`) — no extension involved, since all four are purely in-app.
+
+**Skip YouTube Ad** is the one exception, and needs the extension
+installed to do anything:
+- The button it needs to click lives *inside* the youtube.com iframe
+  the YouTube Window embeds — a genuinely different origin from the
+  app's own page, so `script.js`/`youtube-window.js` can't reach into
+  its DOM directly, no matter how the request gets there.
+- `youtube-window.js`'s `skipAd()` instead posts a `VOCAB_SKIP_YOUTUBE_AD`
+  message straight to that iframe's own `contentWindow`.
+- `content-youtube.js` is what actually receives it and clicks the
+  button — and it can only do that because `manifest.json` now injects
+  it into **every** youtube.com frame, not just top-level tabs
+  (`"all_frames": true`), so a copy of it is genuinely running *inside*
+  that embedded iframe, with normal same-origin access to its own DOM.
+- The same configured key also works by itself, no app involved, on any
+  real standalone youtube.com tab — a direct `keydown` listener in
+  `content-youtube.js`, synced the same way as Return-to-App-Tab /
+  Focus-YouTube-Search (`SYNC_SHORTCUT_KEYS` → `vocabBridge_skipAdKey`
+  in `chrome.storage.local`).
+- It's a silent no-op either way if no ad happens to be showing right
+  when the key is pressed, or if a future YouTube redesign moves the
+  skip button somewhere `content-youtube.js`'s selector list
+  (`YT_SKIP_AD_SELECTORS`) doesn't recognize yet.
 
 ## Data flow
 ```

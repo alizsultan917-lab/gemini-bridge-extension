@@ -208,6 +208,10 @@ async function handleMessage(message, sender) {
         vocabBridge_focusGeminiKey: message.focusGeminiKey || "F7",
         vocabBridge_focusAppKey: message.focusAppKey || "F8",
         vocabBridge_focusYoutubeSearchKey: message.youtubeSearchKey || "F10",
+        // No fallback default here (unlike the three above) — Skip Ad
+        // ships unbound, so a missing/empty value should mean "off",
+        // not silently fall back to some F-key of its own.
+        vocabBridge_skipAdKey: message.skipAdKey || null,
       });
       return { ok: true };
     }
